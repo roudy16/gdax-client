@@ -1,10 +1,12 @@
-#![feature(custom_derive, plugin, question_mark)]
-#![plugin(serde_macros)]
+#[macro_use]
+extern crate serde_derive;
 
 extern crate base64;
 extern crate chrono;
 extern crate crypto;
+extern crate http;
 extern crate hyper;
+extern crate futures;
 extern crate serde;
 extern crate serde_json;
 extern crate time;
@@ -29,13 +31,14 @@ pub struct ApiError {
 #[derive(Debug)]
 pub enum Error {
     Api(ApiError),
-    Http(hyper::Error),
+    Hyper(hyper::Error),
+    Http(http::Error),
     InvalidSecretKey,
     Json(serde_json::Error),
 }
 
-impl std::convert::From<base64::Base64Error> for Error {
-    fn from(_: base64::Base64Error) -> Error {
+impl std::convert::From<base64::DecodeError> for Error {
+    fn from(_: base64::DecodeError) -> Error {
         // Only time we get a base64 error is when decoding secret key
         Error::InvalidSecretKey
     }
@@ -43,13 +46,19 @@ impl std::convert::From<base64::Base64Error> for Error {
 
 impl std::convert::From<hyper::Error> for Error {
     fn from(err: hyper::Error) -> Error {
-        Error::Http(err)
+        Error::Hyper(err)
     }
 }
 
 impl std::convert::From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Error {
         Error::Json(err)
+    }
+}
+
+impl std::convert::From<http::Error> for Error {
+    fn from(err: http::Error) -> Error {
+        Error::Http(err)
     }
 }
 
@@ -72,7 +81,7 @@ impl fmt::Display for Side {
 // because the default encoding/decoding scheme that derive
 // gives us isn't the straightforward mapping unfortunately
 impl serde::Serialize for Side {
-    fn serialize<S>(&self, serializer: &mut S) -> Result<(), S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
         where S: serde::Serializer
     {
         match *self {
@@ -85,25 +94,31 @@ impl serde::Serialize for Side {
 // We manually implement Deserialize for Side here
 // because the default encoding/decoding scheme that derive
 // gives us isn't the straightforward mapping unfortunately
-impl serde::Deserialize for Side {
-    fn deserialize<D>(deserializer: &mut D) -> Result<Side, D::Error>
-        where D: serde::Deserializer
+impl<'de> serde::Deserialize<'de> for Side {
+    fn deserialize<D>(deserializer: D) -> Result<Side, D::Error>
+        where D: serde::Deserializer<'de>
     {
 
         struct SideVisitor;
-        impl serde::de::Visitor for SideVisitor {
+        impl<'a> serde::de::Visitor<'a> for SideVisitor {
             type Value = Side;
 
-            fn visit_str<E>(&mut self, v: &str) -> Result<Self::Value, E>
-                where E: serde::Error {
+            // TODO Implement!
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+                unimplemented!()
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+                where E: serde::de::Error {
                 match &*v.to_lowercase() {
                     "buy" => Ok(Side::Buy),
                     "sell" => Ok(Side::Sell),
-                    _ => Err(E::invalid_value("side must be either `buy` or `sell`"))
+                    _ => Err(E::invalid_value(serde::de::Unexpected::Str("Invalid side"), &self))
                 }
             }
         }
-        deserializer.deserialize(SideVisitor)
+
+        deserializer.deserialize_identifier(SideVisitor)
     }
 }
 

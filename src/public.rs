@@ -1,11 +1,16 @@
-use chrono::{DateTime, UTC};
-use hyper::client::Client as HttpClient;
-use hyper::header::UserAgent;
+use chrono::{DateTime, Utc};
+use hyper::header::HeaderValue;
+use hyper::client::{Client as HttpClient, HttpConnector};
+use hyper::header;
+use hyper::rt::Future;
+use hyper::{Uri, Request, Response, Body, Chunk};
+use futures::{Async, Poll, Stream};
 use serde::Deserialize;
 use serde_json::de;
 use uuid::Uuid;
 
 use super::Error;
+use super::ApiError;
 use super::Side;
 
 const PUBLIC_API_URL: &'static str = "https://api.gdax.com";
@@ -55,12 +60,12 @@ pub struct Tick {
     pub bid: f64,
     pub ask: f64,
     pub volume: f64,
-    pub time: DateTime<UTC>
+    pub time: DateTime<Utc>
 }
 
 #[derive(Deserialize, Debug)]
 pub struct Trade {
-    pub time: DateTime<UTC>,
+    pub time: DateTime<Utc>,
     pub trade_id: u64,
     pub price: f64,
     pub size: f64,
@@ -94,12 +99,12 @@ pub struct Currency {
 
 #[derive(Deserialize, Debug)]
 pub struct Time {
-    pub iso: DateTime<UTC>,
+    pub iso: DateTime<Utc>,
     pub epoch: f64
 }
 
 pub struct Client {
-    http_client: HttpClient,
+    http_client: HttpClient<HttpConnector>,
 }
 
 impl Client {
@@ -110,18 +115,29 @@ impl Client {
     }
 
     fn get_and_decode<T>(&self, url: &str) -> Result<T, Error>
-        where T: Deserialize
+        where for<'de> T: Deserialize<'de>
     {
+        let uri = url.parse::<Uri>().unwrap();
+        let mut req_builder = Request::get(uri);
+        req_builder.header(header::USER_AGENT, HeaderValue::from_static("rust-gdax-client/0.1.0"));
 
-        let mut res = self.http_client.get(url)
-                                      .header(UserAgent("rust-gdax-client/0.1.0".to_owned()))
-                                      .send()?;
+        let req = self.http_client.request(req_builder.body(Body::from(""))?);
 
-        if !res.status.is_success() {
-            return Err(Error::Api(de::from_reader(&mut res)?));
+        let mut res: Response<Body> = match req.wait() {
+            Ok(val) => val,
+            Err(e) => return Err(Error::from(e)),
+        };
+
+        let content: String = match res.body_mut().wait().next() {
+            Some(val) => String::from_utf8(val.unwrap().to_vec()).unwrap(),
+            None => String::from(""),
+        };
+
+        if !res.status().is_success() {
+            return Err(Error::Api(ApiError{ message: content}));
+        } else {
+            return Ok(de::from_reader(&mut content.as_bytes())?)
         }
-
-        Ok(de::from_reader(&mut res)?)
     }
 
     pub fn get_products(&self) -> Result<Vec<Product>, Error> {
@@ -160,8 +176,8 @@ impl Client {
     // XXX: Returns invalid interval?
     pub fn get_historic_rates(&self,
                               product: &str,
-                              start_time: DateTime<UTC>,
-                              end_time: DateTime<UTC>,
+                              start_time: DateTime<Utc>,
+                              end_time: DateTime<Utc>,
                               granularity: u64)
         -> Result<Vec<Candle>, Error> {
 

@@ -1,25 +1,31 @@
 use base64;
-use chrono::{DateTime, UTC};
+use chrono::{DateTime, Utc};
 use crypto::hmac::Hmac;
 use crypto::mac::Mac;
 use crypto::sha2::Sha256;
-use hyper::client::Client as HttpClient;
-use hyper::header::{Accept, ContentType, Headers, qitem, UserAgent};
-use hyper::mime::{Mime, TopLevel, SubLevel};
+use hyper::header;
+use hyper::header::{HeaderMap, HeaderValue};
+use hyper::{Uri, Request, Response, Body, Chunk};
+use hyper::client::{Client as HttpClient, HttpConnector, ResponseFuture};
+use hyper::rt::Future;
+use futures::{Async, Poll, Stream};
 use serde::{self, Deserialize, Serialize};
 use serde_json::{de, ser};
 use std::ops::Deref;
 use time::get_time;
 use uuid::Uuid;
 
+use std::fmt;
+
 use super::Error;
+use super::ApiError;
 use super::Side;
 
 const PRIVATE_API_URL: &'static str = "https://api.gdax.com";
 
 pub struct Client {
     public_client: super::public::Client,
-    http_client: HttpClient,
+    http_client: HttpClient<HttpConnector>,
     key: String,
     secret: String,
     passphrase: String
@@ -39,10 +45,10 @@ pub type Ledger = Vec<LedgerEntry>;
 #[derive(Deserialize, Debug)]
 pub struct LedgerEntry {
     pub id: u64,
-    pub created_at: DateTime<UTC>,
+    pub created_at: DateTime<Utc>,
     pub amount: f64,
     pub balance: f64,
-    #[serde(rename = "type")]
+    // #[serde(rename = "type")]
     pub entry_type: EntryType,
     pub details: Option<EntryDetails>
 }
@@ -66,25 +72,29 @@ pub enum EntryType {
 // We manually implement Deserialize for EntryType here
 // because the default encoding/decoding scheme that derive
 // gives us isn't the straightforward mapping unfortunately
-impl serde::Deserialize for EntryType {
-    fn deserialize<D>(deserializer: &mut D) -> Result<EntryType, D::Error>
-        where D: serde::Deserializer {
+impl<'de> serde::Deserialize<'de> for EntryType {
+    fn deserialize<D>(deserializer: D) -> Result<EntryType, D::Error>
+        where D: serde::Deserializer<'de> {
 
         struct EntryTypeVisitor;
-        impl serde::de::Visitor for EntryTypeVisitor {
+        impl<'a> serde::de::Visitor<'a> for EntryTypeVisitor {
             type Value = EntryType;
 
-            fn visit_str<E>(&mut self, v: &str) -> Result<Self::Value, E>
-                where E: serde::Error {
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+                unimplemented!()
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+                where E: serde::de::Error {
                 match &*v.to_lowercase() {
                     "fee" => Ok(EntryType::Fee),
                     "match" => Ok(EntryType::Match),
                     "transfer" => Ok(EntryType::Transfer),
-                    _ => Err(E::invalid_value("entry type must be either `fee`, `match` or `transfer`"))
+                    _ => Err(E::invalid_value(serde::de::Unexpected::Str("Invalid entry type"), &self))
                 }
             }
         }
-        deserializer.deserialize(EntryTypeVisitor)
+        deserializer.deserialize_identifier(EntryTypeVisitor)
     }
 }
 
@@ -92,12 +102,12 @@ impl serde::Deserialize for EntryType {
 pub struct Hold {
     pub id: Uuid,
     pub account_id: Option<Uuid>,
-    pub created_at: DateTime<UTC>,
-    pub updated_at: Option<DateTime<UTC>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: Option<DateTime<Utc>>,
     pub amount: f64,
-    #[serde(rename = "type")]
+    // #[serde(rename = "type")]
     pub hold_type: HoldType,
-    #[serde(rename = "ref")]
+    // #[serde(rename = "ref")]
     pub ref_id: Uuid
 }
 
@@ -110,24 +120,28 @@ pub enum HoldType {
 // We manually implement Deserialize for HoldType here
 // because the default encoding/decoding scheme that derive
 // gives us isn't the straightforward mapping unfortunately
-impl serde::Deserialize for HoldType {
-    fn deserialize<D>(deserializer: &mut D) -> Result<HoldType, D::Error>
-        where D: serde::Deserializer {
+impl<'de> serde::Deserialize<'de> for HoldType {
+    fn deserialize<D>(deserializer: D) -> Result<HoldType, D::Error>
+        where D: serde::Deserializer<'de> {
 
         struct HoldTypeVisitor;
-        impl serde::de::Visitor for HoldTypeVisitor {
+        impl<'a> serde::de::Visitor<'a> for HoldTypeVisitor {
             type Value = HoldType;
 
-            fn visit_str<E>(&mut self, v: &str) -> Result<Self::Value, E>
-                where E: serde::Error {
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+                unimplemented!()
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+                where E: serde::de::Error {
                 match &*v.to_lowercase() {
                     "order" => Ok(HoldType::Order),
                     "transfer" => Ok(HoldType::Transfer),
-                    _ => Err(E::invalid_value("hold type must be either `order` or `transfer`"))
+                    _ => Err(E::invalid_value(serde::de::Unexpected::Str("Invalid hold type"), &self))
                 }
             }
         }
-        deserializer.deserialize(HoldTypeVisitor)
+        deserializer.deserialize_identifier(HoldTypeVisitor)
     }
 }
 
@@ -191,7 +205,7 @@ impl NewOrder {
 // We manually implement Serialize for NewOrder since
 // each variant needs to be encoded slightly differently
 impl Serialize for NewOrder {
-    fn serialize<S>(&self, serializer: &mut S) -> Result<(), S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
         where S: serde::Serializer
     {
         match *self {
@@ -200,17 +214,17 @@ impl Serialize for NewOrder {
                 // and have Serialize auto derived for that
                 #[derive(Serialize)]
                 struct LimitOrder<'a> {
-                    #[serde(rename = "type")]
+                    // #[serde(rename = "type")]
                     t: &'static str,
                     side: Side,
-                    product_id: &'a str,
+                    product_id: &'a String,
                     price: f64,
                     size: f64
                 }
                 LimitOrder {
                     t: "limit",
                     side: side,
-                    product_id: product_id,
+                    product_id: &product_id,
                     price: price,
                     size: size
                 }.serialize(serializer)
@@ -219,16 +233,16 @@ impl Serialize for NewOrder {
             NewOrder::Market { side, ref product_id, size_or_funds: SizeOrFunds::Size(size) } => {
                 #[derive(Serialize)]
                 struct MarketOrder<'a> {
-                    #[serde(rename = "type")]
+                    // #[serde(rename = "type")]
                     t: &'static str,
                     side: Side,
-                    product_id: &'a str,
+                    product_id: &'a String,
                     size: f64
                 }
                 MarketOrder {
                     t: "market",
                     side: side,
-                    product_id: product_id,
+                    product_id: &product_id,
                     size: size
                 }.serialize(serializer)
             }
@@ -236,16 +250,16 @@ impl Serialize for NewOrder {
             NewOrder::Market { side, ref product_id, size_or_funds: SizeOrFunds::Funds(funds) } => {
                 #[derive(Serialize)]
                 struct MarketOrder<'a> {
-                    #[serde(rename = "type")]
+                    // #[serde(rename = "type")]
                     t: &'static str,
                     side: Side,
-                    product_id: &'a str,
+                    product_id: &'a String,
                     funds: f64
                 }
                 MarketOrder {
                     t: "market",
                     side: side,
-                    product_id: product_id,
+                    product_id: &product_id,
                     funds: funds
                 }.serialize(serializer)
             }
@@ -253,17 +267,17 @@ impl Serialize for NewOrder {
             NewOrder::Stop { side, ref product_id, price, size_or_funds: SizeOrFunds::Size(size) } => {
                 #[derive(Serialize)]
                 struct StopOrder<'a> {
-                    #[serde(rename = "type")]
+                    // #[serde(rename = "type")]
                     t: &'static str,
                     side: Side,
-                    product_id: &'a str,
+                    product_id: &'a String,
                     price: f64,
                     size: f64
                 }
                 StopOrder {
                     t: "stop",
                     side: side,
-                    product_id: product_id,
+                    product_id: &product_id,
                     price: price,
                     size: size
                 }.serialize(serializer)
@@ -272,17 +286,17 @@ impl Serialize for NewOrder {
             NewOrder::Stop { side, ref product_id, price, size_or_funds: SizeOrFunds::Funds(funds) } => {
                 #[derive(Serialize)]
                 struct StopOrder<'a> {
-                    #[serde(rename = "type")]
+                    // #[serde(rename = "type")]
                     t: &'static str,
                     side: Side,
-                    product_id: &'a str,
+                    product_id: &'a String,
                     price: f64,
                     funds: f64
                 }
                 StopOrder {
                     t: "stop",
                     side: side,
-                    product_id: product_id,
+                    product_id: &product_id,
                     price: price,
                     funds: funds
                 }.serialize(serializer)
@@ -303,7 +317,7 @@ pub struct OpenOrder {
     pub fill_fees: f64,
     pub settled: bool,
     pub side: Side,
-    pub created_at: DateTime<UTC>
+    pub created_at: DateTime<Utc>
 }
 
 #[derive(Deserialize, Debug)]
@@ -319,8 +333,8 @@ pub struct Order {
     pub product_id: String,
     pub fill_fees: f64,
     pub side: Side,
-    pub created_at: DateTime<UTC>,
-    pub done_at: Option<DateTime<UTC>>
+    pub created_at: DateTime<Utc>,
+    pub done_at: Option<DateTime<Utc>>
 }
 
 impl Client {
@@ -350,69 +364,110 @@ impl Client {
         Ok(base64::encode(hmac.result().code()))
     }
 
-    fn get_headers(&self, path: &str, body: &str, method: &str) -> Result<Headers, Error> {
+    fn get_headers(&self, path: &str, body: &str, method: &str) -> Result<HeaderMap, Error> {
         let timestamp = get_time().sec.to_string();
         let signature = self.signature(path, body, &timestamp, method)?;
 
-        let mut headers = Headers::new();
-        headers.set(Accept(vec![qitem(Mime(TopLevel::Application, SubLevel::Json, vec![]))]));
-        headers.set(UserAgent("rust-gdax-client/0.1.0".to_owned()));
-        headers.set_raw("CB-ACCESS-KEY", vec![self.key.clone().into_bytes()]);
-        headers.set_raw("CB-ACCESS-SIGN", vec![signature.into_bytes()]);
-        headers.set_raw("CB-ACCESS-PASSPHRASE", vec![self.passphrase.clone().into_bytes()]);
-        headers.set_raw("CB-ACCESS-TIMESTAMP", vec![timestamp.into_bytes()]);
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("rust-gdax-client/1.1.0"));
+        headers.insert("CB-ACCESS-KEY", HeaderValue::from_str(&self.key).unwrap());
+        headers.insert("CB-ACCESS-SIGN", HeaderValue::from_str(&signature).unwrap());
+        headers.insert("CB-ACCESS-PASSPHRASE", HeaderValue::from_str(&self.passphrase).unwrap());
+        headers.insert("CB-ACCESS-TIMESTAMP", HeaderValue::from_str(&timestamp).unwrap());
 
         Ok(headers)
     }
 
     fn get_and_decode<T>(&self, path: &str) -> Result<T, Error>
-        where T: Deserialize
+        where for<'de> T: Deserialize<'de>
     {
-        let headers = self.get_headers(path, "", "GET")?;
+        let headers: HeaderMap = self.get_headers(path, "", "GET")?;
         let url = format!("{}{}", PRIVATE_API_URL, path);
-        let mut res = self.http_client.get(&url)
-                                      .headers(headers)
-                                      .send()?;
+        let uri = url.parse::<Uri>().unwrap();
 
-        if !res.status.is_success() {
-            return Err(Error::Api(de::from_reader(&mut res)?));
+        let mut req_builder = Request::get(uri);
+        for (name, val) in headers {
+            req_builder.header(name.unwrap(), val);
         }
 
-        Ok(de::from_reader(&mut res)?)
+        let mut req: ResponseFuture = self.http_client.request(req_builder.body(Body::from(""))?);
+        let mut res: Response<Body> = match req.wait() {
+            Ok(val) => val,
+            Err(e) => return Err(Error::from(e)),
+        };
+
+        let content: String = match res.body_mut().wait().next() {
+            Some(val) => String::from_utf8(val.unwrap().to_vec()).unwrap(),
+            None => String::from(""),
+        };
+
+        if !res.status().is_success() {
+            return Err(Error::Api(ApiError{ message: content}));
+        } else {
+            return Ok(de::from_reader(&mut content.as_bytes())?)
+        }
     }
 
     fn post_and_decode<T>(&self, path: &str, body: &str) -> Result<T, Error>
-        where T: Deserialize
+        where for<'de> T: Deserialize<'de>
     {
-        let headers = self.get_headers(path, body, "POST")?;
+        let headers: HeaderMap = self.get_headers(path, body, "POST")?;
         let url = format!("{}{}", PRIVATE_API_URL, path);
-        let mut res = self.http_client.post(&url)
-                                      .headers(headers)
-                                      .header(ContentType::json())
-                                      .body(body)
-                                      .send()?;
+        let uri = url.parse::<Uri>().unwrap();
 
-        if !res.status.is_success() {
-            return Err(Error::Api(de::from_reader(&mut res)?));
+        let mut req_builder = Request::post(uri);
+        for (name, val) in headers {
+            req_builder.header(name.unwrap(), val);
         }
 
-        Ok(de::from_reader(&mut res)?)
+        let mut req: ResponseFuture = self.http_client.request(req_builder
+            .body(Body::from(String::from(body)))?);
+        let mut res: Response<Body> = match req.wait() {
+            Ok(val) => val,
+            Err(e) => return Err(Error::from(e)),
+        };
+
+        let content: String = match res.body_mut().wait().next() {
+            Some(val) => String::from_utf8(val.unwrap().to_vec()).unwrap(),
+            None => String::from(""),
+        };
+
+        if !res.status().is_success() {
+            return Err(Error::Api(ApiError{ message: content}));
+        } else {
+            return Ok(de::from_reader(&mut content.as_bytes())?)
+        }
     }
 
     fn delete_and_decode<T>(&self, path: &str) -> Result<T, Error>
-        where T: Deserialize
+        where for<'de> T: Deserialize<'de>
     {
         let headers = self.get_headers(path, "", "DELETE")?;
         let url = format!("{}{}", PRIVATE_API_URL, path);
-        let mut res = self.http_client.delete(&url)
-                                      .headers(headers)
-                                      .send()?;
+        let uri = url.parse::<Uri>().unwrap();
 
-        if !res.status.is_success() {
-            return Err(Error::Api(de::from_reader(&mut res)?));
+        let mut req_builder = Request::delete(uri);
+        for (name, val) in headers {
+            req_builder.header(name.unwrap(), val);
         }
 
-        Ok(de::from_reader(&mut res)?)
+        let mut req = self.http_client.request(req_builder.body(Body::from(""))?);
+        let mut res: Response<Body> = match req.wait() {
+            Ok(val) => val,
+            Err(e) => return Err(Error::from(e)),
+        };
+
+        let content: String = match res.body_mut().wait().next() {
+            Some(val) => String::from_utf8(val.unwrap().to_vec()).unwrap(),
+            None => String::from(""),
+        };
+
+        if !res.status().is_success() {
+            return Err(Error::Api(ApiError{ message: content}));
+        } else {
+            return Ok(de::from_reader(&mut content.as_bytes())?)
+        }
     }
 
     pub fn get_accounts(&self) -> Result<Vec<Account>, Error> {

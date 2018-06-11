@@ -1,25 +1,29 @@
 [package]
-name = "gdax-client"
-version = "0.1.0"
 authors = ["Luqman Aden <me@luqman.ca>"]
+name = "gdax_client"
+version = "1.1.0"
 
 [dependencies]
-base64 = "0.2"
-hyper = "0.9"
-rust-crypto = "0.2"
-serde = "*"
-serde_json = "*"
-serde_macros = "*"
-time = "0.1"
+base64 = "0.9.2"
+http = "0.1.5"
+hyper = "0.12.1"
+futures = "0.1.21"
+#curl = "0.4.12"
+#futures = "0.2.1"
+rust-crypto = "0.2.36"
+serde = "1.0.66"
+serde_json = "1.0.20"
+serde_derive = "1.0.66"
+time = "0.1.40"
 
 [dependencies.chrono]
-version = "0.2.25"
 features = ["serde"]
+version = "0.4.2"
 
 [dependencies.uuid]
-version = "0.3.1"
 features = ["serde"]
+version = "0.6.5"
 
 [dev-dependencies]
 env_logger = "0.3"
-uuid = { version = "0.3.1", features = ["v4"] }
+uuid = { version = "0.6.5", features = ["v4", "serde"] }

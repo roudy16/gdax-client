@@ -24,6 +24,11 @@ pub enum Level {
     Full    = 3
 }
 
+/** TODO
+Should reinstate the automatic conversion to fp64 that was in original to maintain compatibility.
+Can add a '_raw' api maybe? Or something else to more closely mirror types gdax uses.
+*/
+
 #[derive(Deserialize, Debug)]
 pub struct Product {
     pub id: String,

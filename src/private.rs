@@ -4,6 +4,7 @@ use crypto::hmac::Hmac;
 use crypto::mac::Mac;
 use crypto::sha2::Sha256;
 
+use curl::easy::{List};
 
 
 use hyper::header;
@@ -370,17 +371,17 @@ impl Client {
         Ok(base64::encode(hmac.result().code()))
     }
 
-    fn get_headers(&self, path: &str, body: &str, method: &str) -> Result<HeaderMap, Error> {
+    fn get_headers(&self, path: &str, body: &str, method: &str) -> Result<List, Error> {
         let timestamp = get_time().sec.to_string();
         let signature = self.signature(path, body, &timestamp, method)?;
 
-        let mut headers = HeaderMap::new();
-        headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
-        headers.insert(header::USER_AGENT, HeaderValue::from_static("rust-gdax-client/1.1.0"));
-        headers.insert("CB-ACCESS-KEY", HeaderValue::from_str(&self.key).unwrap());
-        headers.insert("CB-ACCESS-SIGN", HeaderValue::from_str(&signature).unwrap());
-        headers.insert("CB-ACCESS-PASSPHRASE", HeaderValue::from_str(&self.passphrase).unwrap());
-        headers.insert("CB-ACCESS-TIMESTAMP", HeaderValue::from_str(&timestamp).unwrap());
+        let mut headers = List::new();
+        headers.append("Accept: application/json");
+        headers.append("User-Agent: rust-gdax-client/1.2.0");
+        headers.append(["CB-ACCESS-KEY: ", self.key].join("").as_str());
+        headers.append(["CB-ACCESS-SIGN: ", signature].join("").as_str());
+        headers.append(["CB-ACCESS-PASSPHRASE: ", self.passphrase].join("").as_str());
+        headers.append(["CB-ACCESS-TIMESTAMP: ", timestamp].join("").as_str());
 
         Ok(headers)
     }

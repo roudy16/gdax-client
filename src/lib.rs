@@ -4,9 +4,13 @@ extern crate serde_derive;
 extern crate base64;
 extern crate chrono;
 extern crate crypto;
+
 extern crate http;
 extern crate hyper;
 extern crate futures;
+
+extern crate curl;
+
 extern crate serde;
 extern crate serde_json;
 extern crate time;

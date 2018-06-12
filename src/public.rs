@@ -1,12 +1,15 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc, SecondsFormat};
+
 use hyper::header::HeaderValue;
 use hyper::client::{Client as HttpClient, HttpConnector};
 use hyper::header;
 use hyper::rt::Future;
 use hyper::{Uri, Request, Response, Body, Chunk};
 use futures::{Async, Poll, Stream};
+
+use curl::easy::Easy;
 use serde::Deserialize;
-use serde_json::de;
+use serde_json::{de, Number};
 use uuid::Uuid;
 
 use super::Error;
@@ -26,22 +29,29 @@ pub struct Product {
     pub id: String,
     pub base_currency: String,
     pub quote_currency: String,
-    pub base_min_size: f64,
-    pub base_max_size: f64,
-    pub quote_increment: f64
+    pub base_min_size: String,
+    pub base_max_size: String,
+    pub quote_increment: String,
+    pub status: String,
+    pub margin_enabled: bool,
+    pub min_market_funds: String,
+    pub max_market_funds: String,
+    pub post_only: bool,
+    pub limit_only: bool,
+    pub cancel_only: bool,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct BookEntry {
-    pub price: f64,
-    pub size: f64,
+    pub price: String,
+    pub size: String,
     pub num_orders: u64
 }
 
 #[derive(Deserialize, Debug)]
 pub struct FullBookEntry {
-    pub price: f64,
-    pub size: f64,
+    pub price: String,
+    pub size: String,
     pub order_id: Uuid
 }
 
@@ -55,11 +65,11 @@ pub struct OrderBook<T> {
 #[derive(Deserialize, Debug)]
 pub struct Tick {
     pub trade_id: u64,
-    pub price: f64,
-    pub size: f64,
-    pub bid: f64,
-    pub ask: f64,
-    pub volume: f64,
+    pub price: String,
+    pub size: String,
+    pub bid: String,
+    pub ask: String,
+    pub volume: String,
     pub time: DateTime<Utc>
 }
 
@@ -67,8 +77,8 @@ pub struct Tick {
 pub struct Trade {
     pub time: DateTime<Utc>,
     pub trade_id: u64,
-    pub price: f64,
-    pub size: f64,
+    pub price: String,
+    pub size: String,
     pub side: Side,
 }
 
@@ -84,17 +94,19 @@ pub struct Candle {
 
 #[derive(Deserialize, Debug)]
 pub struct Stats {
-    pub open: f64,
-    pub high: f64,
-    pub low: f64,
-    pub volume: f64
+    pub open: String,
+    pub high: String,
+    pub low: String,
+    pub volume: String,
+    pub last: String,
+    pub volume_30day: String,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct Currency {
     pub id: String,
     pub name: String,
-    pub min_size: f64
+    pub min_size: String
 }
 
 #[derive(Deserialize, Debug)]
@@ -104,77 +116,77 @@ pub struct Time {
 }
 
 pub struct Client {
+    curl: Easy,
     http_client: HttpClient<HttpConnector>,
 }
 
 impl Client {
     pub fn new() -> Client {
         Client {
+            curl: Easy::new(),
+
             http_client: HttpClient::new()
         }
     }
 
-    fn get_and_decode<T>(&self, url: &str) -> Result<T, Error>
+    fn get_and_decode<T>(&mut self, url: &str) -> Result<T, Error>
         where for<'de> T: Deserialize<'de>
     {
-        let uri = url.parse::<Uri>().unwrap();
-        let mut req_builder = Request::get(uri);
-        req_builder.header(header::USER_AGENT, HeaderValue::from_static("rust-gdax-client/0.1.0"));
+        self.curl.url(url).unwrap();
+        self.curl.useragent("rust-gdax-client/1.2.0").unwrap();
 
-        let req = self.http_client.request(req_builder.body(Body::from(""))?);
+        let mut buf = Vec::new();
 
-        let mut res: Response<Body> = match req.wait() {
-            Ok(val) => val,
-            Err(e) => return Err(Error::from(e)),
-        };
+        {
+            let mut t = self.curl.transfer();
+            t.write_function(|data| {
+                buf.extend_from_slice(data);
+                Ok(data.len())
+            }).unwrap();
+            t.perform().unwrap();
+        }
 
-        let content: String = match res.body_mut().wait().next() {
-            Some(val) => String::from_utf8(val.unwrap().to_vec()).unwrap(),
-            None => String::from(""),
-        };
-
-        if !res.status().is_success() {
-            return Err(Error::Api(ApiError{ message: content}));
+        if self.curl.response_code().unwrap() != 200 {
+            return Err(Error::Api(ApiError{ message: String::from_utf8(buf).unwrap()}));
         } else {
-            return Ok(de::from_reader(&mut content.as_bytes())?)
+            return Ok(de::from_reader(&mut buf.as_slice())?)
         }
     }
 
-    pub fn get_products(&self) -> Result<Vec<Product>, Error> {
+    pub fn get_products(&mut self) -> Result<Vec<Product>, Error> {
         self.get_and_decode(&format!("{}/products", PUBLIC_API_URL))
     }
 
-    pub fn get_best_order(&self, product: &str) -> Result<OrderBook<BookEntry>, Error> {
+    pub fn get_best_order(&mut self, product: &str) -> Result<OrderBook<BookEntry>, Error> {
         self.get_and_decode(&format!("{}/products/{}/book?level={}",
                                      PUBLIC_API_URL,
                                      product,
                                      Level::Best as u8))
     }
 
-    pub fn get_top50_orders(&self, product: &str) -> Result<OrderBook<BookEntry>, Error> {
+    pub fn get_top50_orders(&mut self, product: &str) -> Result<OrderBook<BookEntry>, Error> {
         self.get_and_decode(&format!("{}/products/{}/book?level={}",
                                      PUBLIC_API_URL,
                                      product,
                                      Level::Top50 as u8))
     }
 
-    pub fn get_full_book(&self, product: &str) -> Result<OrderBook<FullBookEntry>, Error> {
+    pub fn get_full_book(&mut self, product: &str) -> Result<OrderBook<FullBookEntry>, Error> {
         self.get_and_decode(&format!("{}/products/{}/book?level={}",
                                      PUBLIC_API_URL,
                                      product,
                                      Level::Full as u8))
     }
 
-    pub fn get_product_ticker(&self, product: &str) -> Result<Tick, Error> {
+    pub fn get_product_ticker(&mut self, product: &str) -> Result<Tick, Error> {
         self.get_and_decode(&format!("{}/products/{}/ticker", PUBLIC_API_URL, product))
     }
 
-    pub fn get_trades(&self, product: &str) -> Result<Vec<Trade>, Error> {
+    pub fn get_trades(&mut self, product: &str) -> Result<Vec<Trade>, Error> {
         self.get_and_decode(&format!("{}/products/{}/trades", PUBLIC_API_URL, product))
     }
 
-    // XXX: Returns invalid interval?
-    pub fn get_historic_rates(&self,
+    pub fn get_historic_rates(&mut self,
                               product: &str,
                               start_time: DateTime<Utc>,
                               end_time: DateTime<Utc>,
@@ -184,20 +196,20 @@ impl Client {
         self.get_and_decode(&format!("{}/products/{}/candles?start={}&end={}&granularity={}",
                                      PUBLIC_API_URL,
                                      product,
-                                     start_time.to_rfc3339(),
-                                     end_time.to_rfc3339(),
+                                     start_time.to_rfc3339_opts(SecondsFormat::Secs, true),
+                                     end_time.to_rfc3339_opts(SecondsFormat::Secs, true),
                                      granularity))
     }
 
-    pub fn get_24hr_stats(&self, product: &str) -> Result<Stats, Error> {
+    pub fn get_24hr_stats(&mut self, product: &str) -> Result<Stats, Error> {
         self.get_and_decode(&format!("{}/products/{}/stats", PUBLIC_API_URL, product))
     }
 
-    pub fn get_currencies(&self) -> Result<Vec<Currency>, Error> {
+    pub fn get_currencies(&mut self) -> Result<Vec<Currency>, Error> {
         self.get_and_decode(&format!("{}/currencies", PUBLIC_API_URL))
     }
 
-    pub fn get_time(&self) -> Result<Time, Error> {
+    pub fn get_time(&mut self) -> Result<Time, Error> {
         self.get_and_decode(&format!("{}/time", PUBLIC_API_URL))
     }
 }

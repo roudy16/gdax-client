@@ -4,17 +4,9 @@ use crypto::hmac::Hmac;
 use crypto::mac::Mac;
 use crypto::sha2::Sha256;
 
-use curl::easy::{List};
+use curl::easy::{Easy, List};
 
-
-use hyper::header;
-use hyper::header::{HeaderMap, HeaderValue};
-use hyper::{Uri, Request, Response, Body, Chunk};
-use hyper::client::{Client as HttpClient, HttpConnector, ResponseFuture};
-use hyper::rt::Future;
 use futures::{Async, Poll, Stream};
-
-
 
 use serde::{self, Deserialize, Serialize};
 use serde_json::{de, ser};
@@ -32,7 +24,7 @@ const PRIVATE_API_URL: &'static str = "https://api.gdax.com";
 
 pub struct Client {
     public_client: super::public::Client,
-    http_client: HttpClient<HttpConnector>,
+    curl: Easy,
     key: String,
     secret: String,
     passphrase: String
@@ -348,7 +340,7 @@ impl Client {
     pub fn new(key: &str, secret: &str, passphrase: &str) -> Client {
         Client {
             public_client: super::public::Client::new(),
-            http_client: HttpClient::new(),
+            curl: Easy::new(),
             key: key.to_owned(),
             secret: secret.to_owned(),
             passphrase: passphrase.to_owned()
@@ -376,124 +368,113 @@ impl Client {
         let signature = self.signature(path, body, &timestamp, method)?;
 
         let mut headers = List::new();
-        headers.append("Accept: application/json");
-        headers.append("User-Agent: rust-gdax-client/1.2.0");
-        headers.append(["CB-ACCESS-KEY: ", self.key].join("").as_str());
-        headers.append(["CB-ACCESS-SIGN: ", signature].join("").as_str());
-        headers.append(["CB-ACCESS-PASSPHRASE: ", self.passphrase].join("").as_str());
-        headers.append(["CB-ACCESS-TIMESTAMP: ", timestamp].join("").as_str());
+        headers.append("Accept: application/json").unwrap();
+        headers.append("User-Agent: rust-gdax-client/1.2.0").unwrap();
+        headers.append(["CB-ACCESS-KEY: ", self.key.as_str()].join("").as_str()).unwrap();
+        headers.append(["CB-ACCESS-SIGN: ", signature.as_str()].join("").as_str()).unwrap();
+        headers.append(["CB-ACCESS-PASSPHRASE: ", self.passphrase.as_str()].join("").as_str()).unwrap();
+        headers.append(["CB-ACCESS-TIMESTAMP: ", timestamp.as_str()].join("").as_str()).unwrap();
 
         Ok(headers)
     }
 
-    fn get_and_decode<T>(&self, path: &str) -> Result<T, Error>
+    fn get_and_decode<T>(&mut self, path: &str) -> Result<T, Error>
         where for<'de> T: Deserialize<'de>
     {
-        let headers: HeaderMap = self.get_headers(path, "", "GET")?;
+        let headers: List = self.get_headers(path, "", "GET")?;
         let url = format!("{}{}", PRIVATE_API_URL, path);
-        let uri = url.parse::<Uri>().unwrap();
+        self.curl.url(url.as_str()).unwrap();
+        self.curl.http_headers(headers).unwrap();
 
-        let mut req_builder = Request::get(uri);
-        for (name, val) in headers {
-            req_builder.header(name.unwrap(), val);
+        let mut buf = Vec::new();
+
+        {
+            let mut t = self.curl.transfer();
+            t.write_function(|data| {
+                buf.extend_from_slice(data);
+                Ok(data.len())
+            }).unwrap();
+            t.perform().unwrap();
         }
 
-        let mut req: ResponseFuture = self.http_client.request(req_builder.body(Body::from(""))?);
-        let mut res: Response<Body> = match req.wait() {
-            Ok(val) => val,
-            Err(e) => return Err(Error::from(e)),
-        };
-
-        let content: String = match res.body_mut().wait().next() {
-            Some(val) => String::from_utf8(val.unwrap().to_vec()).unwrap(),
-            None => String::from(""),
-        };
-
-        if !res.status().is_success() {
-            return Err(Error::Api(ApiError{ message: content}));
+        if self.curl.response_code().unwrap() != 200 {
+            return Err(Error::Api(ApiError{ message: String::from_utf8(buf).unwrap()}));
         } else {
-            return Ok(de::from_reader(&mut content.as_bytes())?)
+            return Ok(de::from_reader(&mut buf.as_slice())?);
         }
     }
 
-    fn post_and_decode<T>(&self, path: &str, body: &str) -> Result<T, Error>
+    fn post_and_decode<T>(&mut self, path: &str, body: &str) -> Result<T, Error>
         where for<'de> T: Deserialize<'de>
     {
-        let headers: HeaderMap = self.get_headers(path, body, "POST")?;
+        let headers: List = self.get_headers(path, body, "POST")?;
         let url = format!("{}{}", PRIVATE_API_URL, path);
-        let uri = url.parse::<Uri>().unwrap();
+        self.curl.url(url.as_str()).unwrap();
+        self.curl.http_headers(headers).unwrap();
 
-        let mut req_builder = Request::post(uri);
-        for (name, val) in headers {
-            req_builder.header(name.unwrap(), val);
+        let mut buf = Vec::new();
+
+        {
+            let mut t = self.curl.transfer();
+            t.write_function(|data| {
+                buf.extend_from_slice(data);
+                Ok(data.len())
+            }).unwrap();
+            t.perform().unwrap();
         }
 
-        let mut req: ResponseFuture = self.http_client.request(req_builder
-            .body(Body::from(String::from(body)))?);
-        let mut res: Response<Body> = match req.wait() {
-            Ok(val) => val,
-            Err(e) => return Err(Error::from(e)),
-        };
-
-        let content: String = match res.body_mut().wait().next() {
-            Some(val) => String::from_utf8(val.unwrap().to_vec()).unwrap(),
-            None => String::from(""),
-        };
-
-        if !res.status().is_success() {
-            return Err(Error::Api(ApiError{ message: content}));
+        // TODO success codes can be more than just 200
+        if self.curl.response_code().unwrap() != 200 {
+            return Err(Error::Api(ApiError{ message: String::from_utf8(buf).unwrap()}));
         } else {
-            return Ok(de::from_reader(&mut content.as_bytes())?)
+            return Ok(de::from_reader(&mut buf.as_slice())?);
         }
     }
 
-    fn delete_and_decode<T>(&self, path: &str) -> Result<T, Error>
+    fn delete_and_decode<T>(&mut self, path: &str) -> Result<T, Error>
         where for<'de> T: Deserialize<'de>
     {
-        let headers = self.get_headers(path, "", "DELETE")?;
+        let headers: List = self.get_headers(path, "", "DELETE")?;
         let url = format!("{}{}", PRIVATE_API_URL, path);
-        let uri = url.parse::<Uri>().unwrap();
+        self.curl.url(url.as_str()).unwrap();
+        self.curl.http_headers(headers).unwrap();
 
-        let mut req_builder = Request::delete(uri);
-        for (name, val) in headers {
-            req_builder.header(name.unwrap(), val);
+        let mut buf = Vec::new();
+
+        {
+            let mut t = self.curl.transfer();
+            t.write_function(|data| {
+                buf.extend_from_slice(data);
+                Ok(data.len())
+            }).unwrap();
+            t.perform().unwrap();
         }
 
-        let mut req = self.http_client.request(req_builder.body(Body::from(""))?);
-        let mut res: Response<Body> = match req.wait() {
-            Ok(val) => val,
-            Err(e) => return Err(Error::from(e)),
-        };
-
-        let content: String = match res.body_mut().wait().next() {
-            Some(val) => String::from_utf8(val.unwrap().to_vec()).unwrap(),
-            None => String::from(""),
-        };
-
-        if !res.status().is_success() {
-            return Err(Error::Api(ApiError{ message: content}));
+        // TODO success codes can be more than just 200
+        if self.curl.response_code().unwrap() != 200 {
+            return Err(Error::Api(ApiError{ message: String::from_utf8(buf).unwrap()}));
         } else {
-            return Ok(de::from_reader(&mut content.as_bytes())?)
+            return Ok(de::from_reader(&mut buf.as_slice())?);
         }
     }
 
-    pub fn get_accounts(&self) -> Result<Vec<Account>, Error> {
+    pub fn get_accounts(&mut self) -> Result<Vec<Account>, Error> {
         self.get_and_decode("/accounts")
     }
 
-    pub fn get_account(&self, id: Uuid) -> Result<Account, Error> {
+    pub fn get_account(&mut self, id: Uuid) -> Result<Account, Error> {
         self.get_and_decode(&format!("/accounts/{}", id))
     }
 
-    pub fn get_account_history(&self, id: Uuid) -> Result<Ledger, Error> {
+    pub fn get_account_history(&mut self, id: Uuid) -> Result<Ledger, Error> {
         self.get_and_decode(&format!("/accounts/{}/ledger", id))
     }
 
-    pub fn get_account_holds(&self, id: Uuid) -> Result<Vec<Hold>, Error> {
+    pub fn get_account_holds(&mut self, id: Uuid) -> Result<Vec<Hold>, Error> {
         self.get_and_decode(&format!("/accounts/{}/holds", id))
     }
 
-    pub fn post_order(&self, order: &NewOrder) -> Result<OrderId, Error> {
+    pub fn post_order(&mut self, order: &NewOrder) -> Result<OrderId, Error> {
         #[derive(Deserialize)]
         struct NewOrderResult { id: OrderId }
 
@@ -501,11 +482,11 @@ impl Client {
         Ok(self.post_and_decode::<NewOrderResult>("/orders", &body)?.id)
     }
 
-    pub fn cancel_order(&self, order_id: OrderId) -> Result<OrderId, Error> {
+    pub fn cancel_order(&mut self, order_id: OrderId) -> Result<OrderId, Error> {
         Ok(self.delete_and_decode::<Vec<OrderId>>(&format!("/orders/{}", order_id))?[0])
     }
 
-    pub fn cancel_all_orders(&self, product_id: Option<&str>) -> Result<Vec<OrderId>, Error> {
+    pub fn cancel_all_orders(&mut self, product_id: Option<&str>) -> Result<Vec<OrderId>, Error> {
         if let Some(product_id) = product_id {
             self.delete_and_decode(&format!("/orders?product_id={}", product_id))
         } else {
@@ -513,7 +494,7 @@ impl Client {
         }
     }
 
-    pub fn get_orders_with_status(&self,
+    pub fn get_orders_with_status(&mut self,
                                   open: bool,
                                   pending: bool,
                                   active: bool)
@@ -528,11 +509,11 @@ impl Client {
         self.get_and_decode(&format!("/orders?{}", status))
     }
 
-    pub fn get_orders(&self) -> Result<Vec<OpenOrder>, Error> {
+    pub fn get_orders(&mut self) -> Result<Vec<OpenOrder>, Error> {
         self.get_orders_with_status(true, true, true)
     }
 
-    pub fn get_order(&self, order_id: OrderId) -> Result<Order, Error> {
+    pub fn get_order(&mut self, order_id: OrderId) -> Result<Order, Error> {
         self.get_and_decode(&format!("/orders/{}", order_id))
     }
 }

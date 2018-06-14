@@ -1,10 +1,5 @@
 use chrono::{DateTime, Utc, SecondsFormat};
 
-use hyper::header::HeaderValue;
-use hyper::client::{Client as HttpClient, HttpConnector};
-use hyper::header;
-use hyper::rt::Future;
-use hyper::{Uri, Request, Response, Body, Chunk};
 use futures::{Async, Poll, Stream};
 
 use curl::easy::Easy;
@@ -122,15 +117,12 @@ pub struct Time {
 
 pub struct Client {
     curl: Easy,
-    http_client: HttpClient<HttpConnector>,
 }
 
 impl Client {
     pub fn new() -> Client {
         Client {
             curl: Easy::new(),
-
-            http_client: HttpClient::new()
         }
     }
 

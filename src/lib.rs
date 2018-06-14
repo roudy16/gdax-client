@@ -5,8 +5,6 @@ extern crate base64;
 extern crate chrono;
 extern crate crypto;
 
-extern crate http;
-extern crate hyper;
 extern crate futures;
 
 extern crate curl;
@@ -35,8 +33,6 @@ pub struct ApiError {
 #[derive(Debug)]
 pub enum Error {
     Api(ApiError),
-    Hyper(hyper::Error),
-    Http(http::Error),
     InvalidSecretKey,
     Json(serde_json::Error),
 }
@@ -48,21 +44,9 @@ impl std::convert::From<base64::DecodeError> for Error {
     }
 }
 
-impl std::convert::From<hyper::Error> for Error {
-    fn from(err: hyper::Error) -> Error {
-        Error::Hyper(err)
-    }
-}
-
 impl std::convert::From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Error {
         Error::Json(err)
-    }
-}
-
-impl std::convert::From<http::Error> for Error {
-    fn from(err: http::Error) -> Error {
-        Error::Http(err)
     }
 }
 

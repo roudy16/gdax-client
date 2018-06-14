@@ -9,10 +9,11 @@ const CB_KEY: &'static str = env!("CB_KEY");
 const CB_SECRET: &'static str = env!("CB_SECRET");
 const CB_PASSPHRASE: &'static str = env!("CB_PASSPHRASE");
 
+
 fn main() {
     env_logger::init().unwrap();
 
-    let private_client = PrivateClient::new(CB_KEY, CB_SECRET, CB_PASSPHRASE);
+    let mut private_client = PrivateClient::new(CB_KEY, CB_SECRET, CB_PASSPHRASE);
 
     if let Ok(accounts) = private_client.get_accounts() {
         println!("Accounts: {:?}", accounts);

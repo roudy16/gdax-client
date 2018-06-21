@@ -7,7 +7,6 @@ use gdax_client::PublicClient;
 
 
 fn main() {
-
     let mut public_client = PublicClient::new();
 
     println!("Products:\n{:?}", public_client.get_products());

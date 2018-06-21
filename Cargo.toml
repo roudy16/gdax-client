@@ -1,5 +1,5 @@
 [package]
-authors = ["Luqman Aden <me@luqman.ca>"]
+authors = ["Luqman Aden <me@luqman.ca>", "Steve Roudebush <roudy@umich.edu>"]
 name = "gdax_client"
 version = "1.2.0"
 
@@ -9,7 +9,7 @@ curl = "0.4.12"
 futures = "0.2.1"
 rust-crypto = "0.2.36"
 serde = "1.0.66"
-serde_json = {version ="1.0.20", features = ["arbitrary_precision"]}
+serde_json = {version ="1.0.21", features = ["arbitrary_precision"]}
 serde_derive = "1.0.66"
 time = "0.1.40"
 
